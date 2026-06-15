@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MecanoHero</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#282828;--fg:#d4d4d4;--muted:#555;--results-bg:#1e1e1e}
+.light{--bg:#f2f0e8;--fg:#333;--muted:#999;--results-bg:#e8e6de}
+body{background:var(--bg);color:var(--fg);font-family:'Courier Prime',monospace;height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;overflow:hidden;transition:background .35s,color .35s}
+#app{width:90%;max-width:920px;display:flex;flex-direction:column;gap:3rem;padding:7rem 0 4rem;align-items:center}
+#logo{position:fixed;top:3.5rem;left:50%;transform:translateX(-50%);color:#e8838f;font-size:1.1rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;z-index:10}
+#theme-btn{position:fixed;top:3.35rem;right:2rem;background:none;border:none;cursor:pointer;z-index:10;padding:0;display:flex;align-items:center}
+#theme-icon{width:18px;height:18px;display:block}
+#text-display{font-size:1.5rem;line-height:2.4;text-align:center;user-select:none;position:relative;padding:1rem 0;transition:opacity .25s;width:100%;color:var(--fg)}
+#progress-bar{height:2px;background:#e8838f;width:0;border-radius:1px;transition:width .15s linear;margin-top:-.3rem}
+#wpm-counter{color:var(--muted);font-size:.85rem;font-weight:700;transition:color .35s}
+.word{display:inline-block;margin:0 3px;transition:opacity .15s,color .15s}
+.word.faded{opacity:.5}
+.word.correct{opacity:1;color:var(--fg)}
+.word.incorrect{opacity:1;color:#e06c75}
+.char{position:relative;display:inline-block}
+.char.pending{opacity:.5;color:var(--fg)}
+.char.correct{opacity:1;color:var(--fg)}
+.char.incorrect{opacity:1;color:#e06c75;text-decoration:underline}
+.char.current::after{content:'';position:absolute;bottom:-1px;left:-1px;right:-1px;height:2px;background:#e8838f;border-radius:1px}
+#results{position:fixed;bottom:0;left:0;right:0;background:var(--results-bg);padding:1rem 2rem;z-index:100;opacity:0;visibility:hidden;transition:opacity .35s,visibility .35s,background .35s;text-align:center}
+#results.active{opacity:1;visibility:visible}
+#results span{display:inline-block;margin:0 .8rem}
+#results .label{color:var(--muted);font-size:.8rem;font-weight:700}
+#results .value{color:var(--fg);font-size:.9rem;font-weight:700}
+@keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}
+#esc-hint{position:fixed;bottom:3.5rem;left:50%;transform:translateX(-50%);color:var(--muted);font-size:.75rem;font-weight:700;z-index:200;transition:opacity .25s,color .35s}
+#esc-hint.hidden{opacity:0}
+#app.shaking{animation:shake .15s ease-in-out}
+</style>
+</head>
+<body>
+<h1 id="logo">MecanoHero</h1>
+<button id="theme-btn"><img src="icons/sun.png" alt="tema claro" id="theme-icon"></button>
+<div id="app">
+  <div id="text-display"></div>
+  <div id="progress-bar"></div>
+  <span id="wpm-counter">0 PPM</span>
+  <p id="esc-hint">Presione ESC para cambiar de frase</p>
+</div>
+<div id="results">
+  <span><span class="label">Velocidad</span> <span class="value" id="result-wpm">0 PPM</span></span>
+  <span><span class="label">Precisión</span> <span class="value" id="result-accuracy">0%</span></span>
+  <span><span class="label">Errores</span> <span class="value" id="result-errors">0</span></span>
+  <span><span class="label">Tiempo</span> <span class="value" id="result-time">0:00</span></span>
+</div>
+<script>
+const state = {
+  texts: [],
+  words: [],
+  wordChars: [],
+  wordStatuses: [],
+  charStatuses: [],
+  currentWordIdx: 0,
+  currentCharIdx: 0,
+  isActive: false,
+  completed: false,
+  restarting: false,
+  startTime: null,
+  timerInterval: null,
+  totalKeystrokes: 0,
+  correctKeystrokes: 0,
+  incorrectKeystrokes: 0
+};
+let pendingText = null;
+
+function pickRandom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function preloadNext() {
+  pendingText = pickRandom(state.texts);
+  console.log('Próximo texto:', pendingText);
+}
+
+function initGame(preferredText) {
+  const text = preferredText || pickRandom(state.texts);
+  state.words = text.split(/\s+/).filter(w => w.length > 0);
+  state.wordChars = state.words.map(w => [...w]);
+  state.wordStatuses = state.words.map(() => 'pending');
+  state.charStatuses = state.wordChars.map(chars => chars.map(() => 'pending'));
+  state.currentWordIdx = 0;
+  state.currentCharIdx = 0;
+  state.isActive = false;
+  state.completed = false;
+  state.startTime = null;
+  state.totalKeystrokes = 0;
+  state.correctKeystrokes = 0;
+  state.incorrectKeystrokes = 0;
+
+  if (state.timerInterval) {
+    clearInterval(state.timerInterval);
+    state.timerInterval = null;
+  }
+
+  document.getElementById('results').classList.remove('active');
+  document.getElementById('esc-hint').classList.remove('hidden');
+  render();
+}
+
+function renderText() {
+  const display = document.getElementById('text-display');
+  display.innerHTML = '';
+
+  state.words.forEach((word, wi) => {
+    const wordSpan = document.createElement('span');
+    wordSpan.className = 'word';
+
+    if (state.completed) {
+      wordSpan.classList.add(state.wordStatuses[wi] || 'faded');
+    } else if (wi < state.currentWordIdx) {
+      wordSpan.classList.add(state.wordStatuses[wi]);
+    } else if (wi === state.currentWordIdx) {
+      wordSpan.classList.add('active');
+    } else {
+      wordSpan.classList.add('faded');
+    }
+
+    const chars = state.wordChars[wi];
+    chars.forEach((ch, ci) => {
+      const charSpan = document.createElement('span');
+      charSpan.className = 'char';
+      charSpan.textContent = ch;
+
+      if (state.completed) {
+        if (state.charStatuses[wi] && state.charStatuses[wi][ci]) {
+          charSpan.classList.add(state.charStatuses[wi][ci]);
+        }
+      } else if (wi === state.currentWordIdx) {
+        charSpan.classList.add(state.charStatuses[wi][ci] || 'pending');
+        if (ci === state.currentCharIdx) {
+          charSpan.classList.add('current');
+        }
+      }
+
+      wordSpan.appendChild(charSpan);
+    });
+
+    display.appendChild(wordSpan);
+    if (wi < state.words.length - 1) {
+      display.appendChild(document.createTextNode(' '));
+    }
+  });
+
+}
+
+function render() {
+  renderText();
+  updateProgress();
+}
+
+function updateProgress() {
+  const totalChars = state.wordChars.reduce((s, w) => s + w.length, 0);
+  const charsBefore = state.wordChars.slice(0, state.currentWordIdx).reduce((s, w) => s + w.length, 0);
+  const pct = totalChars > 0 ? ((charsBefore + state.currentCharIdx) / totalChars * 100) : 0;
+  document.getElementById('progress-bar').style.width = Math.min(pct, 100) + '%';
+}
+
+function updateStats() {
+  if (!state.isActive || state.completed) return;
+  const elapsed = (Date.now() - state.startTime) / 1000 / 60;
+  const wpm = elapsed > 0.01 ? Math.round((state.correctKeystrokes / 5) / elapsed) : 0;
+  document.getElementById('wpm-counter').textContent = wpm + ' PPM';
+}
+
+function startTimer() {
+  state.startTime = Date.now();
+  document.getElementById('esc-hint').classList.add('hidden');
+}
+
+function handleChar(ch) {
+  if (state.completed) return;
+  if (!state.isActive) {
+    state.isActive = true;
+    startTimer();
+  }
+
+  const expected = state.wordChars[state.currentWordIdx][state.currentCharIdx];
+  state.totalKeystrokes++;
+
+  if (ch === expected) {
+    state.charStatuses[state.currentWordIdx][state.currentCharIdx] = 'correct';
+    state.correctKeystrokes++;
+  } else {
+    state.charStatuses[state.currentWordIdx][state.currentCharIdx] = 'incorrect';
+    state.incorrectKeystrokes++;
+    shakeScreen();
+    playErrorBeep();
+  }
+
+  state.currentCharIdx++;
+
+  const isLastWord = state.currentWordIdx === state.words.length - 1;
+  const wordDone = state.currentCharIdx === state.wordChars[state.currentWordIdx].length;
+  if (isLastWord && wordDone) {
+    state.wordStatuses[state.currentWordIdx] = state.charStatuses[state.currentWordIdx].some(s => s === 'incorrect') ? 'incorrect' : 'correct';
+    completeTest();
+    return;
+  }
+
+  updateStats();
+  render();
+}
+
+let audioCtx;
+function playErrorBeep() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.frequency.value = 200;
+  osc.type = 'sine';
+  gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+  osc.start(audioCtx.currentTime);
+  osc.stop(audioCtx.currentTime + 0.12);
+}
+
+function shakeScreen() {
+  const app = document.getElementById('app');
+  app.classList.remove('shaking');
+  void app.offsetWidth;
+  app.classList.add('shaking');
+  app.addEventListener('animationend', () => app.classList.remove('shaking'), { once: true });
+}
+
+function handleSpace() {
+  if (state.completed) return;
+  if (!state.isActive) return;
+  if (state.currentCharIdx === 0) return;
+
+  finalizeWord();
+}
+
+function finalizeWord() {
+  const hasErrors = state.charStatuses[state.currentWordIdx].some(s => s === 'incorrect');
+  state.wordStatuses[state.currentWordIdx] = hasErrors ? 'incorrect' : 'correct';
+
+  const isLast = state.currentWordIdx === state.words.length - 1;
+  if (isLast) {
+    completeTest();
+    return;
+  }
+
+  state.currentWordIdx++;
+  state.currentCharIdx = 0;
+  render();
+}
+
+function handleBackspace() {
+  if (state.completed) return;
+  if (!state.isActive) return;
+  if (state.currentCharIdx === 0) return;
+
+  state.currentCharIdx--;
+  state.charStatuses[state.currentWordIdx][state.currentCharIdx] = 'pending';
+
+  updateStats();
+  render();
+}
+
+function completeTest() {
+  state.completed = true;
+  clearInterval(state.timerInterval);
+  state.timerInterval = null;
+
+  const elapsed = Math.floor((Date.now() - state.startTime) / 1000);
+  const minutes = elapsed / 60;
+  const wpm = minutes > 0 ? Math.round((state.correctKeystrokes / 5) / minutes) : 0;
+  const totalChars = state.correctKeystrokes + state.incorrectKeystrokes;
+  const accuracy = totalChars > 0 ? Math.round((state.correctKeystrokes / totalChars) * 100) : 0;
+  const m = Math.floor(elapsed / 60);
+  const s = elapsed % 60;
+
+  document.getElementById('result-wpm').textContent = `${wpm} PPM`;
+  document.getElementById('result-accuracy').textContent = `${accuracy}%`;
+  document.getElementById('result-errors').textContent = state.incorrectKeystrokes;
+  document.getElementById('result-time').textContent = `${m}:${s.toString().padStart(2, '0')}`;
+
+  render();
+  document.getElementById('results').classList.add('active');
+  document.getElementById('esc-hint').classList.remove('hidden');
+}
+
+function restart() {
+  if (state.restarting) return;
+  state.restarting = true;
+
+  const display = document.getElementById('text-display');
+  display.style.opacity = '0';
+
+  setTimeout(() => {
+    initGame(pendingText);
+    display.style.opacity = '1';
+    state.restarting = false;
+    preloadNext();
+  }, 250);
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    restart();
+    return;
+  }
+  if (state.completed || state.restarting) return;
+  if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+  if (e.key === ' ') {
+    e.preventDefault();
+    handleSpace();
+  } else if (e.key === 'Backspace') {
+    e.preventDefault();
+    handleBackspace();
+  } else if (e.key.length === 1) {
+    e.preventDefault();
+    handleChar(e.key);
+  }
+});
+
+document.addEventListener('contextmenu', e => e.preventDefault());
+
+document.getElementById('theme-btn').addEventListener('click', () => {
+  const isLight = document.body.classList.toggle('light');
+  document.getElementById('theme-icon').src = isLight ? 'icons/moon.png' : 'icons/sun.png';
+});
+
+(async function load() {
+  try {
+    const resp = await fetch('texts.json');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    state.texts = await resp.json();
+  } catch {
+    state.texts = [
+      "El sol se ocultaba tras las montañas mientras el viento susurraba entre los árboles del bosque antiguo.",
+      "La tecnología avanza a pasos agigantados transformando cada aspecto de nuestra vida cotidiana.",
+      "La lectura es una puerta abierta a mundos infinitos donde la imaginación no tiene límites.",
+      "El café de la mañana es ese pequeño ritual que nos prepara para enfrentar el día con energía.",
+      "La música tiene el poder de transportarnos a momentos y lugares que creíamos olvidados."
+    ];
+  }
+  preloadNext();
+  let firstText = pickRandom(state.texts);
+  while (firstText === pendingText && state.texts.length > 1) firstText = pickRandom(state.texts);
+  initGame(firstText);
+})();
+</script>
+</body>
+</html>
